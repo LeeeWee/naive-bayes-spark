@@ -27,9 +27,9 @@ import org.slf4j.LoggerFactory;
 import scala.Tuple2;
 
 public class NaiveBayes {
+	private static Logger logger = LoggerFactory.getLogger(NaiveBayes.class);
 	
 	public static void main(String[] args) {
-		Logger logger = LoggerFactory.getLogger(NaiveBayes.class);
 		
 		if (args.length < 2) {
 			System.out.println("Usage: java -cp *.jar edu.whu.liwei.naivebayes.NaiveBayes trainingData testData");
@@ -43,39 +43,40 @@ public class NaiveBayes {
 		
 		// create Spark context with Spark configuration
 		JavaSparkContext sc = new JavaSparkContext(new SparkConf().setAppName("NaiveBayesClassifier"));
-//		sc.setLogLevel("ERROR");
 		
 		// read training and test data
 		JavaRDD<String> trainingData = sc.textFile(trainingDataPath);
 		JavaRDD<String> testData = sc.textFile(testDataPath);
 		
 		
-		System.out.println("Start training...");
+		logger.info("Start training...");
 		// get classDocNums, and convert to broadcast shared value
-		System.out.println("Counting classDocNums...");
+		logger.info("Counting classDocNums...");
 		JavaPairRDD<String, Integer> classDocNums = classDocNumsCount(trainingData);
 		Map<String, Integer> classDocNumsMap = classDocNums.collectAsMap();
 		Broadcast<Map<String, Integer>> broadcastClassDocNums = sc.broadcast(classDocNumsMap);
 		
-		System.out.println("Calculating prior probability...");
+		logger.info("Calculating prior probability...");
 		// calculate prior probability, and convert to broadcast shared value
 		Map<String, Double> priorProbability = calculatePriorProbability(classDocNumsMap);
 		Broadcast<Map<String, Double>> broadcastPriorProbability = sc.broadcast(priorProbability);
-		
+		System.out.println(broadcastPriorProbability.getValue());
 		// get classWordDocNums
-		System.out.println("Counting classWordDocNums...");
+		logger.info("Counting classWordDocNums...");
 		JavaPairRDD<String, Integer> classWordDocNums = classWordDocNumsCount(trainingData);
 		
 		// calculate conditionProbably, and convert to broadcast shared value
-		System.out.println("Calculating condition probability");
+		logger.info("Calculating condition probability");
 		JavaPairRDD<String, Double> conditionProbability = calculateConditionProbability(broadcastClassDocNums, classWordDocNums, sc);
 		Map<String, Double> conditionProbabilityMap = conditionProbability.collectAsMap();
 		Broadcast<Map<String, Double>> broadcastconditionProbability = sc.broadcast(conditionProbabilityMap);
 		
 		logger.info("Finished training!");
 		
+		logger.info("Start evaluating...");
+		logger.info("Getting doc labels...");
 		JavaPairRDD<String, String> docLabels = getDocLabels(testData);
-		System.out.println("Start evaluating...");
+		logger.info("Preicting category for doc...");
 		JavaPairRDD<String, String> classPrediction = docClassPrediction(testData, broadcastPriorProbability, broadcastconditionProbability);
 		evaluation(docLabels, classPrediction);
 	}
@@ -229,9 +230,9 @@ public class NaiveBayes {
 						List<Tuple2<String, String>> classProbability = new ArrayList<Tuple2<String, String>>();
 						for (Entry<String, Double> entry : broadcastPriorProbability.getValue().entrySet()) {
 							double tempValue = Math.log(entry.getValue()); // convert the predict value calculated by product to sum of log	
-							StringTokenizer itr = new StringTokenizer(line.toString().substring(commaIndex + 1));
-							while (itr.hasMoreTokens()) {
-								String tempkey = entry.getKey() + ":" + itr.nextToken();
+							String[] words = line.toString().substring(commaIndex + 1).split(" ");
+							for (String word : words) {
+								String tempkey = entry.getKey() + ":" + word;
 								if (conditionProbabilityMap.containsKey(tempkey)) {
 									// if <class:word> exists in wordsProbably, get the probability
 									tempValue += Math.log(conditionProbabilityMap.get(tempkey));
@@ -244,7 +245,7 @@ public class NaiveBayes {
 						return classProbability.iterator();
 					}
 				});
-		
+		System.out.println(classProbability.collect());
 		@SuppressWarnings("serial")
 		JavaPairRDD<String, String> classPrediction = classProbability.reduceByKey(
 				new Function2<String, String, String>() {
@@ -257,7 +258,6 @@ public class NaiveBayes {
 							return v2;
 					}
 				});
-		
 		return classPrediction;
 	}
 	
@@ -288,12 +288,14 @@ public class NaiveBayes {
 		Map<String, String> docLabelsMap = docLabels.collectAsMap();
 		Map<String, String> classPredictionMap = classPrediction.collectAsMap();
 		int right = 0;
-		for (Entry<String, String> entry : docLabelsMap.entrySet()) {
-			if (classPredictionMap.get(entry.getKey()).equals(entry.getValue()))
-				right ++;
+		for (Entry<String, String> entry : classPredictionMap.entrySet()) {
+			int colonIndex = entry.getValue().indexOf(":"); 
+			String predictLabel = entry.getValue().substring(colonIndex + 1);
+			if (docLabelsMap.get(entry.getKey()).equals(predictLabel))
+				right++;
 		}
-		double accuracy = right / (double)docLabelsMap.size();
-		System.out.println("Finished evaluating!\n Accuracy: " + right + "/" + docLabelsMap.size() + " = " + accuracy);
+		double accuracy = right / (double)classPredictionMap.size();
+		logger.info("Finished evaluating!\n Accuracy: " + right + "/" + classPredictionMap.size() + " = " + accuracy);
 	}
 	
 	

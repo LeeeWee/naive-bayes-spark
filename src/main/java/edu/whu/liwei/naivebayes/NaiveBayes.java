@@ -20,12 +20,16 @@ import org.apache.spark.api.java.function.Function2;
 import org.apache.spark.api.java.function.PairFlatMapFunction;
 import org.apache.spark.api.java.function.PairFunction;
 import org.apache.spark.broadcast.Broadcast;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 import scala.Tuple2;
 
 public class NaiveBayes {
 	
 	public static void main(String[] args) {
+		Logger logger = LoggerFactory.getLogger(NaiveBayes.class);
 		
 		if (args.length < 2) {
 			System.out.println("Usage: java -cp *.jar edu.whu.liwei.naivebayes.NaiveBayes trainingData testData");
@@ -39,6 +43,7 @@ public class NaiveBayes {
 		
 		// create Spark context with Spark configuration
 		JavaSparkContext sc = new JavaSparkContext(new SparkConf().setAppName("NaiveBayesClassifier"));
+//		sc.setLogLevel("ERROR");
 		
 		// read training and test data
 		JavaRDD<String> trainingData = sc.textFile(trainingDataPath);
@@ -47,21 +52,27 @@ public class NaiveBayes {
 		
 		System.out.println("Start training...");
 		// get classDocNums, and convert to broadcast shared value
+		System.out.println("Counting classDocNums...");
 		JavaPairRDD<String, Integer> classDocNums = classDocNumsCount(trainingData);
 		Map<String, Integer> classDocNumsMap = classDocNums.collectAsMap();
 		Broadcast<Map<String, Integer>> broadcastClassDocNums = sc.broadcast(classDocNumsMap);
 		
+		System.out.println("Calculating prior probability...");
 		// calculate prior probability, and convert to broadcast shared value
 		Map<String, Double> priorProbability = calculatePriorProbability(classDocNumsMap);
 		Broadcast<Map<String, Double>> broadcastPriorProbability = sc.broadcast(priorProbability);
 		
 		// get classWordDocNums
+		System.out.println("Counting classWordDocNums...");
 		JavaPairRDD<String, Integer> classWordDocNums = classWordDocNumsCount(trainingData);
 		
 		// calculate conditionProbably, and convert to broadcast shared value
+		System.out.println("Calculating condition probability");
 		JavaPairRDD<String, Double> conditionProbability = calculateConditionProbability(broadcastClassDocNums, classWordDocNums, sc);
 		Map<String, Double> conditionProbabilityMap = conditionProbability.collectAsMap();
 		Broadcast<Map<String, Double>> broadcastconditionProbability = sc.broadcast(conditionProbabilityMap);
+		
+		logger.info("Finished training!");
 		
 		JavaPairRDD<String, String> docLabels = getDocLabels(testData);
 		System.out.println("Start evaluating...");
@@ -152,14 +163,22 @@ public class NaiveBayes {
 	public static JavaPairRDD<String, Double> calculateConditionProbability(final Broadcast<Map<String, Integer>> broadcastClassDocNums,
 			JavaPairRDD<String, Integer> classWordDocNums, JavaSparkContext sc) {
 		@SuppressWarnings("serial")
-		JavaPairRDD<String, Double> conditionProbability = JavaPairRDD.fromJavaRDD(classWordDocNums.map(
+		JavaRDD<Tuple2<String, Double>> conditionProbabilityRDD = classWordDocNums.map(
 				new Function<Tuple2<String, Integer>, Tuple2<String, Double>>() {
 					public Tuple2<String, Double> call(Tuple2<String, Integer> tuple) throws Exception {
 						String className = tuple._1().split(":")[0];
 						double classDocNums = broadcastClassDocNums.getValue().get(className);
 						return new Tuple2<String, Double>(tuple._1(), (tuple._2 + 1.0)/(classDocNums + 2.0));
 					}
-		}));
+		});
+		@SuppressWarnings("serial")
+		JavaPairRDD<String, Double> conditionProbability = conditionProbabilityRDD.mapToPair(
+				new PairFunction<Tuple2<String, Double>, String, Double>() {
+					public Tuple2<String, Double> call(Tuple2<String, Double> t) throws Exception {
+						return new Tuple2<String, Double>(t._1(), t._2());
+					}
+					
+				});
 		
 		// add probability for words excluded in class 
 		List<Tuple2<String, Double>> additionalProbability = new ArrayList<Tuple2<String, Double>>();

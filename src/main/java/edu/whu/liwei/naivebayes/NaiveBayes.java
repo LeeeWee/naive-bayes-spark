@@ -290,7 +290,7 @@ public class NaiveBayes {
 		int right = 0;
 		for (Entry<String, String> entry : classPredictionMap.entrySet()) {
 			int colonIndex = entry.getValue().indexOf(":"); 
-			String predictLabel = entry.getValue().substring(colonIndex + 1);
+			String predictLabel = entry.getValue().substring(0, colonIndex);
 			if (docLabelsMap.get(entry.getKey()).equals(predictLabel))
 				right++;
 		}

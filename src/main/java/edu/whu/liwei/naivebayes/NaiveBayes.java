@@ -1,6 +1,8 @@
 package edu.whu.liwei.naivebayes;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -10,6 +12,7 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.StringTokenizer;
 
+import org.apache.commons.collections.functors.TruePredicate;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
@@ -49,7 +52,11 @@ public class NaiveBayes {
 		JavaRDD<String> testData = sc.textFile(testDataPath);
 		
 		
-		logger.info("Start training...");
+		String dateFormat = "HH:mm:ss:SSS";
+		SimpleDateFormat sdf = new SimpleDateFormat(dateFormat);
+		// get begin time
+		long startTime = System.currentTimeMillis();
+		System.out.println("Strat training at " + sdf.format(new Date(startTime)));
 		// get classDocNums, and convert to broadcast shared value
 		logger.info("Counting classDocNums...");
 		JavaPairRDD<String, Integer> classDocNums = classDocNumsCount(trainingData);
@@ -71,14 +78,25 @@ public class NaiveBayes {
 		Map<String, Double> conditionProbabilityMap = conditionProbability.collectAsMap();
 		Broadcast<Map<String, Double>> broadcastconditionProbability = sc.broadcast(conditionProbabilityMap);
 		
-		logger.info("Finished training!");
+		// get end time
+		long endTime = System.currentTimeMillis();
+		System.out.println("Finished training at " + sdf.format(new Date(endTime)));
+		System.out.println("Total cost " + (endTime - startTime)/1000.0 + "s");
 		
 		logger.info("Start evaluating...");
 		logger.info("Getting doc labels...");
 		JavaPairRDD<String, String> docLabels = getDocLabels(testData);
-		logger.info("Preicting category for doc...");
+		// get begin time
+		startTime = System.currentTimeMillis();
+		// if jobCtrl doesn't all finished, block process
+		System.out.println("Start predicting category at " + sdf.format(new Date(startTime)));
 		JavaPairRDD<String, String> classPrediction = docClassPrediction(testData, broadcastPriorProbability, broadcastconditionProbability);
-		evaluation(docLabels, classPrediction);
+//		predict(testData, conditionProbabilityMap, conditionProbabilityMap);
+		// get end time
+		endTime = System.currentTimeMillis();
+		System.out.println("Finished prediciton at " + sdf.format(new Date(endTime)));
+		System.out.println("Total cost " + (endTime - startTime)/1000.0 + "s");
+//		evaluation(docLabels, classPrediction);
 	}
 	
 	/**
@@ -245,7 +263,6 @@ public class NaiveBayes {
 						return classProbability.iterator();
 					}
 				});
-		System.out.println(classProbability.collect());
 		@SuppressWarnings("serial")
 		JavaPairRDD<String, String> classPrediction = classProbability.reduceByKey(
 				new Function2<String, String, String>() {
@@ -280,6 +297,47 @@ public class NaiveBayes {
 	}
 	
 	/**
+	 * predict on single node
+	 */
+	public static List<String> predictOnSingleNode(JavaRDD<String> testData, 
+			Map<String, Double> conditionProbabilityMap, Map<String, Double> priorProbability ) {
+		List<String> turePredict = new ArrayList<String>();
+		List<String> lines = testData.collect();
+		int right = 0, i = 0;
+		for (String line : lines) {
+			i++;
+			int colonIndex = line.indexOf(":");
+			int commaIndex = line.indexOf(",");
+			String docId = line.substring(0, colonIndex);
+			String className = line.substring(colonIndex + 1, commaIndex);
+			double probability = 0.0;
+			String predictLabel = "";
+			for (Entry<String, Double> entry : priorProbability.entrySet()) {
+				double tempValue = Math.log(entry.getValue()); // convert the predict value calculated by product to sum of log	
+				String[] words = line.toString().substring(commaIndex + 1).split(" ");
+				for (String word : words) {
+					String tempkey = entry.getKey() + ":" + word;
+					if (conditionProbabilityMap.containsKey(tempkey)) {
+						// if <class:word> exists in wordsProbably, get the probability
+						tempValue += Math.log(conditionProbabilityMap.get(tempkey));
+					} else { // if doesn't exist, using the probability of class probability
+						tempValue += Math.log(conditionProbabilityMap.get(entry.getKey()));						
+					}
+				}
+				if (tempValue >= probability) {
+					predictLabel = entry.getKey();
+				}
+			}
+			if (predictLabel.equals(className)) {
+				right++;
+				turePredict.add(docId);
+			}
+		}
+		System.out.println("Evaluating!\n Accuracy: " + right + "/" + i + " = " + i);
+		System.out.println(turePredict);
+		return turePredict;
+	}
+	/**
 	 * evaluating predict result
 	 * @param docLabels
 	 * @param classPrediction
@@ -295,7 +353,7 @@ public class NaiveBayes {
 				right++;
 		}
 		double accuracy = right / (double)classPredictionMap.size();
-		logger.info("Finished evaluating!\n Accuracy: " + right + "/" + classPredictionMap.size() + " = " + accuracy);
+		logger.info("Evaluating!\n Accuracy: " + right + "/" + classPredictionMap.size() + " = " + accuracy);
 	}
 	
 	
